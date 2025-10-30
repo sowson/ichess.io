@@ -1,0 +1,13 @@
+# CMake build #
+build/
+cmake-build-debug/
+release/
+debug/
+
+# OS Generated #
+.DS_Store*
+ehthumbs.db
+Icon?
+Thumbs.db
+*.swp
+

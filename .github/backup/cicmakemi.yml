@@ -1,0 +1,80 @@
+name: CMakeM-Darknet-x64
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Install Homebrew
+        run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: brew install opencv clblas
+
+      - name: Configure LibChess (x86_64)
+        run: cmake -B cmake/libchess/build_x86 -S cmake/libchess             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}             -DCMAKE_OSX_ARCHITECTURES=x86_64             -DCMAKE_C_FLAGS="-target x86_64-apple-macos13 -march=x86-64"             -DCMAKE_CXX_FLAGS="-target x86_64-apple-macos13 -march=x86-64"             -DCMAKE_OSX_SYSROOT=$(xcrun --sdk macosx --show-sdk-path)
+
+      - name: Build LibChess (x86_64)
+        run: cmake --build cmake/libchess/build_x86 --config ${{env.BUILD_TYPE}}
+
+      - name: Copy LibChess shared library
+        run: |
+          mkdir -p 3rdparty/libchess
+          cp cmake/libchess/build_x86/shared/libchess.* 3rdparty/libchess/
+
+      - name: Configure Project (x86_64)
+        run: cmake -B build_x86 -S .             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}             -DCMAKE_OSX_ARCHITECTURES=x86_64             -DCMAKE_C_FLAGS="-target x86_64-apple-macos13 -march=x86-64"             -DCMAKE_CXX_FLAGS="-target x86_64-apple-macos13 -march=x86-64"             -DCMAKE_OSX_SYSROOT=$(xcrun --sdk macosx --show-sdk-path)
+
+      - name: Build Project (x86_64)
+        run: cmake --build build_x86 --config ${{env.BUILD_TYPE}}
+
+      - name: Bundle binary and dependencies
+        run: |
+          mkdir -p release
+          mv build_x86/darknet release/darknet.mac.x64
+          cp cmake/libchess/build_x86/shared/libchess.dylib release/
+
+      - name: Package release
+        run: zip -j release/Darknet.mac.x64.zip release/*
+
+      - name: Create and push tag
+        run: |
+          TAG="darknet-macOS-x64-v$(date +'%Y%m%d%H%M%S')-$RANDOM"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Verify zip exists
+        run: ls -l release/
+
+      - name: Upload GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Darknet macOS x64 Release ${{ env.TAG }}
+          tag_name: ${{ env.TAG }}
+          files: release/Darknet.mac.x64.zip
+          overwrite: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

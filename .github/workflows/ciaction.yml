@@ -1,0 +1,171 @@
+name: Build Darknet & iChess.io (Multi-Arch)
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    name: ${{ matrix.os }} - ${{ matrix.arch }} builds
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu
+            arch: x86_64
+            runner: ubuntu-latest
+          - os: macos
+            arch: x86_64
+            runner: macos-latest
+          - os: ubuntu
+            arch: arm64
+            runner: ubuntu-latest
+          - os: macos
+            arch: arm64
+            runner: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Confirm compiler architecture
+        if: matrix.os == 'macos' && matrix.arch == 'x86_64'
+        run: |
+          which clang++
+          clang++ -v
+          echo "Running architecture: $(arch)"
+
+      - name: Install Dependencies
+        run: |
+          if [[ "${{ matrix.os }}" == "ubuntu" ]]; then
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends \
+              libopencv-dev pocl-opencl-icd libclblas-dev libopencv-dev build-essential cmake git
+          else
+            if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
+              /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+              brew install opencv clblas || true
+            else
+              brew install --quiet cmake opencv clblas || true
+            fi
+          fi
+
+      - name: Build LibChess
+        run: |
+          cmake -B cmake/libchess/build -S cmake/libchess -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+          cmake --build cmake/libchess/build
+          mkdir -p 3rdparty/libchess
+          cp cmake/libchess/build/shared/libchess.* 3rdparty/libchess/ || true
+
+      - name: Build Darknet
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+          cmake --build .
+          mkdir -p ../release
+          cp darknet ../release/Darknet.${{ matrix.os }}.${{ matrix.arch }} || true
+          cp ../3rdparty/libchess/libchess.* ../release/ || true
+          cd ../release
+          if [[ "${{ matrix.os }}" == "ubuntu" ]]; then
+            tar czvf Darknet.${{ matrix.os }}.${{ matrix.arch }}.tar.gz Darknet.${{ matrix.os }}.${{ matrix.arch }} libchess.* || true
+          else
+            zip -j Darknet.${{ matrix.os }}.${{ matrix.arch }}.zip Darknet.${{ matrix.os }}.${{ matrix.arch }} libchess.* || true
+          fi
+          cd ..
+
+      - name: Build iChess.io
+        run: |
+          mkdir -p build_chess
+          cd build_chess
+          cmake .. -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DDARKNET_ENG_CHESS=1
+          cmake --build .
+          mkdir -p ../release
+          cp darknet ../release/iChess.io.en.${{ matrix.os }}.${{ matrix.arch }} || true
+          cp ../cfg/chess*.cfg ../weights/chess*.weights ../3rdparty/libchess/libchess.* ../release/ || true
+          cd ../release
+          if [[ "${{ matrix.os }}" == "ubuntu" ]]; then
+            tar czvf iChess.io.en.${{ matrix.os }}.${{ matrix.arch }}.tar.gz iChess.io.en.${{ matrix.os }}.${{ matrix.arch }} *.cfg *.weights libchess.* || true
+          else
+            zip -j iChess.io.en.${{ matrix.os }}.${{ matrix.arch }}.zip iChess.io.en.${{ matrix.os }}.${{ matrix.arch }} *.cfg *.weights libchess.* || true
+          fi
+          cd ..
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}-artifacts
+          path: release/*.*
+
+  publish-release:
+    name: publish release
+    runs-on: ubuntu-latest
+    needs: [build]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auto-generate Version Tag
+        if: github.ref == 'refs/heads/main'
+        id: tag
+        run: |
+          VERSION="v$(date +'%Y.%m.%d-%H%M%S')"
+          echo "TAG_NAME=$VERSION" >> $GITHUB_ENV
+          echo "Generated tag: $VERSION"
+      - name: Create Tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { TAG_NAME } = process.env;
+            const ref = `refs/tags/${TAG_NAME}`;
+            console.log(`Creating tag ${ref}`);
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref,
+              sha: context.sha
+            });
+
+      - name: Create GitHub Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Creating draft release ${TAG_NAME}..."
+          gh release create "${TAG_NAME}" \
+            --repo "${{ github.repository }}" \
+            --title "iChess.io ${TAG_NAME}" \
+            --notes "Automated **draft** release of iChess.io ${TAG_NAME}" \
+            --draft || true
+
+      - name: Wait for GitHub API to Settle
+        run: |
+          echo "Waiting 27s before upload..."
+          sleep 27
+
+      - name: Download all Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: List Downloaded Artifacts
+        run: ls -R release
+
+      - name: Upload to Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Uploading artifacts to draft release ${TAG_NAME}..."
+          gh release upload "${TAG_NAME}" release/*.zip release/*.tar.gz \
+            --repo "${{ github.repository }}" --clobber

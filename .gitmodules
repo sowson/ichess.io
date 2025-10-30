@@ -1,0 +1,9 @@
+[submodule "cmake/cable"]
+	path = cmake/cable
+	url = https://github.com/sowson/cable
+[submodule "cmake/clBLAS"]
+	path = cmake/clBLAS
+	url = https://github.com/sowson/clBLAS
+[submodule "cmake/libchess"]
+	path = cmake/libchess
+	url = https://github.com/sowson/libchess
